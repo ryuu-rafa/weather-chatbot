@@ -1,16 +1,25 @@
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from openai import OpenAI
 from config.settings import AI_API_KEY, AI_BASE_URL, AI_MODEL
-
-client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
 
 
 class AIServiceError(Exception):
     """Dilempar kalau AI API gagal merespons dengan benar."""
     pass
+
+
+def _get_client() -> OpenAI:
+    if not AI_API_KEY or not AI_BASE_URL:
+        raise AIServiceError("Konfigurasi AI belum lengkap. Periksa AI_API_KEY dan AI_BASE_URL.")
+    return OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
+
+
+def _sekarang_wib() -> datetime:
+    """Waktu sekarang dalam WIB (UTC+7), supaya tanggal 'hari ini' benar walau server memakai UTC."""
+    return datetime.now(timezone(timedelta(hours=7)))
 
 
 def _strip_thinking_tags(text: str) -> str:
@@ -43,6 +52,7 @@ def _call_ai(system_prompt: str, user_message: str, max_tokens: int, temperature
 
     for percobaan in range(1, max_percobaan + 1):
         try:
+            client = _get_client()
             response = client.chat.completions.create(
                 model=AI_MODEL,
                 messages=[
@@ -51,7 +61,6 @@ def _call_ai(system_prompt: str, user_message: str, max_tokens: int, temperature
                 ],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                extra_body={"enable_thinking": False},
             )
             return _get_content_safely(response)
 
@@ -60,7 +69,9 @@ def _call_ai(system_prompt: str, user_message: str, max_tokens: int, temperature
 
         except Exception as e:
             error_text = str(e)
-            error_bisa_diulang = any(kode in error_text for kode in ["502", "503", "504", "timeout", "Timeout"])
+            error_bisa_diulang = any(
+                kode in error_text for kode in ["429", "502", "503", "504", "timeout", "Timeout"]
+            )
 
             if error_bisa_diulang and percobaan < max_percobaan:
                 time.sleep(jeda_detik)
@@ -108,13 +119,13 @@ def extract_intent(
     Return field "lokasi_list": daftar nama daerah yang diminta (1 lokasi atau lebih,
     user bisa menyebut beberapa kota sekaligus seperti "cuaca jaksel dan kalsel").
     """
-    hari_ini = datetime.now().strftime("%A, %d %B %Y")
+    hari_ini = _sekarang_wib().strftime("%A, %d %B %Y")
 
     system_prompt = f"""Kamu adalah pengekstrak intent untuk chatbot cuaca Indonesia.
 Tugasmu HANYA mengekstrak informasi, JANGAN menjawab pertanyaan cuaca itu sendiri.
 JANGAN tampilkan proses berpikir dalam bentuk apapun, langsung balas JSON-nya saja tanpa teks lain.
 
-Hari ini adalah: {hari_ini}. Gunakan ini sebagai acuan untuk menghitung tanggal relatif
+Hari ini adalah: {hari_ini} (WIB). Gunakan ini sebagai acuan untuk menghitung tanggal relatif
 yang disebut user (misalnya "besok", "lusa", "minggu depan", "4 hari lagi", "kemarin").
 
 Pengguna sering memakai nama tidak resmi/singkatan untuk daerah, misalnya:
